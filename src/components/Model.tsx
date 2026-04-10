@@ -50,7 +50,6 @@ export function Model({
   const pigGroup = useRef<Group>(null);
   const coinGroup = useRef<Group>(null);
 
-  // ✅ IMPORTANT: manual rotation tracking
   const rotationY = useRef(0);
 
   const scaleIn = useRef(SCALE_EPS);
@@ -150,7 +149,6 @@ export function Model({
       }
     }
 
-    // ✅ FIXED ROTATION (Quaternion)
     if (pigBody.current) {
       rotationY.current += delta * rotSpeed;
 
@@ -162,7 +160,6 @@ export function Model({
       });
     }
 
-    // ✅ SAFE SCALE (visual only)
     if (pigGroup.current) {
       const s = baseScale * boost;
       pigGroup.current.scale.set(s, s, s);
@@ -178,14 +175,12 @@ export function Model({
       <Environment preset="warehouse" environmentIntensity={0.45} blur={20} />
 
       <Center>
-        {/* 🐷 Pig */}
         <RigidBody ref={pigBody} type="kinematicPosition" colliders="trimesh">
           <group ref={pigGroup}>
             <primitive object={pig.scene} />
           </group>
         </RigidBody>
 
-        {/* 🪙 Coin */}
         {Array.from({ length: 10 }).map((_, index) => (
           <RigidBody
             colliders="hull"
