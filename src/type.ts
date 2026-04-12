@@ -1,6 +1,7 @@
 export const AnimationState = {
   IDLE: "IDLE",
   ANIMATING: "ANIMATING",
+  RESULTS: "RESULTS",
   COMPLETE: "COMPLETE",
 } as const;
 
