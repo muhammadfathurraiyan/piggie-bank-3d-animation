@@ -183,6 +183,7 @@ export function Model({
 
         {Array.from({ length: 10 }).map((_, index) => (
           <RigidBody
+            ccd
             colliders="hull"
             restitution={0.1}
             friction={0.6}

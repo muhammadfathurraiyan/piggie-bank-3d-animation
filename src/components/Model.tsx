@@ -92,7 +92,7 @@ const COIN_YAW_SPIN_TRACK = 2;
 const SHOW_PHYSICS_DEBUG = false;
 
 /** `true` = green wireframe cylinder matching the belly `CylinderCollider` only (not the Rapier debug). */
-const DEBUG_BELLY_FLOOR_VISUAL = true;
+const DEBUG_BELLY_FLOOR_VISUAL = false;
 
 type InteriorBounds = { min: Vector3; max: Vector3 };
 

@@ -7,8 +7,37 @@ export const TIMELINE = {
   SCALE: { A: 1, B: 5 },
 } as const;
 
+/** Phase A: shortest-path yaw back to front-facing before strain (seconds). */
+export const RESET_DURATION = 0.65;
+
+const STRAIN = {
+  AMP1: 0.055,
+  AMP2: 0.022,
+  OMEGA1: 12,
+  OMEGA2: 19,
+} as const;
+
+/** Pitch (rotation X, radians) during strain — small lean + wobble (large X tosses coins). */
+const PITCH = {
+  LEAN: -0.08,
+  WOBBLE1: 0.045,
+  WOBBLE2: 0.018,
+  OMEGA1: 13,
+  OMEGA2: 20,
+} as const;
+
+/** Roll (rotation Z, radians) during strain — subtle rock only. */
+const ROLL = {
+  SWAY1: 0.042,
+  SWAY2: 0.028,
+  OMEGA1: 16,
+  OMEGA2: 25,
+  PHASE: 2.1,
+} as const;
+
 export const IDLE_ROT_SPEED = 1;
-export const ROT_MAX = 10;
+/** Y spin speed during RESULTS — keep modest so contents aren’t flung by the collider. */
+export const ROT_MAX = 1.15;
 /** Peak zoom multiplier during the spin (narrower FOV ≈ × larger on screen; same curve as old mesh scale). */
 export const SCALE_MAX = 1.72;
 
@@ -27,13 +56,13 @@ export const BANG = {
 
 const SHAKE = {
   IDLE: 0.016,
-  ANIM_MIN: 0.055,
-  ANIM_MAX: 0.13,
-  RESULTS_MUL: 0.8,
+  ANIM_MIN: 0.032,
+  ANIM_MAX: 0.075,
+  RESULTS_MUL: 0.52,
 } as const;
 
-/** Phase advance per second — lower = cheaper shake frequency, slightly calmer motion. */
-const SHAKE_PHASE = { ANIMATING: 18, RESULTS: 12 } as const;
+/** Phase advance per second — lower = calmer jitter, less violent collider motion. */
+const SHAKE_PHASE = { ANIMATING: 12, RESULTS: 9 } as const;
 
 const SETTLE_EPS = {
   BOOST: 1.002,
@@ -106,11 +135,96 @@ export function animatingZoomBoost(t: number): number {
 }
 
 function shakeStressAt(t: number): number {
-  const { ROT, SCALE } = TIMELINE;
+  const { SCALE } = TIMELINE;
   const capped = Math.min(t, TIMELINE.TOTAL);
-  const rampRot = smoothstep(window01(capped, ROT.A, ROT.B));
+  if (capped <= RESET_DURATION) {
+    return smoothstep(capped / RESET_DURATION) * 0.16;
+  }
+  const strainT = capped - RESET_DURATION;
+  const strainTotal = TIMELINE.TOTAL - RESET_DURATION;
+  const rampStrain = smoothstep(
+    window01(strainT, 0, Math.min(0.5, strainTotal * 0.22)),
+  );
   const rampScale = smoothstep(window01(capped, SCALE.A, SCALE.B));
-  return Math.max(rampRot, rampScale * 0.85);
+  return Math.max(rampStrain, rampScale * 0.62);
+}
+
+/** Equivalent angle in (-π, π] for yaw-only rotation. */
+export function wrapPi(theta: number): number {
+  const twoPi = Math.PI * 2;
+  let x = theta % twoPi;
+  if (x > Math.PI) x -= twoPi;
+  if (x < -Math.PI) x += twoPi;
+  return x;
+}
+
+/** Shortest rotation delta (radians) so `startYaw + delta` is visually 0° on Y. */
+export function shortestYawDeltaToZero(startYawRad: number): number {
+  return -wrapPi(startYawRad);
+}
+
+/**
+ * Yaw (radians) during ANIMATING: ease to front-facing, then bounded struggle oscillation.
+ * Zoom timeline unchanged — this only drives mesh/body yaw.
+ */
+export function animatingYawRadians(t: number, startYawRad: number): number {
+  const capped = Math.min(Math.max(0, t), TIMELINE.TOTAL);
+  const aligned = startYawRad + shortestYawDeltaToZero(startYawRad);
+
+  if (capped <= RESET_DURATION) {
+    const u = smoothstep(capped / RESET_DURATION);
+    return MathUtils.lerp(startYawRad, aligned, u);
+  }
+
+  const strainT = capped - RESET_DURATION;
+  const strainTotal = TIMELINE.TOTAL - RESET_DURATION;
+  const env = smoothstep(
+    window01(strainT, 0, Math.min(0.45, strainTotal * 0.2)),
+  );
+  const osc =
+    STRAIN.AMP1 * Math.sin(STRAIN.OMEGA1 * strainT) * env +
+    STRAIN.AMP2 * Math.sin(STRAIN.OMEGA2 * strainT + 1.1) * env;
+  return aligned + osc;
+}
+
+/**
+ * Pitch (radians) during ANIMATING: 0 while resetting yaw, then lean + X wobble in strain.
+ */
+export function animatingPitchRadians(t: number): number {
+  const capped = Math.min(Math.max(0, t), TIMELINE.TOTAL);
+  if (capped <= RESET_DURATION) {
+    return 0;
+  }
+  const strainT = capped - RESET_DURATION;
+  const strainTotal = TIMELINE.TOTAL - RESET_DURATION;
+  const env = smoothstep(
+    window01(strainT, 0, Math.min(0.45, strainTotal * 0.2)),
+  );
+  const lean = PITCH.LEAN * env;
+  const wobble =
+    PITCH.WOBBLE1 * env * Math.sin(PITCH.OMEGA1 * strainT + 0.4) +
+    PITCH.WOBBLE2 * env * Math.sin(PITCH.OMEGA2 * strainT + 1.3);
+  return lean + wobble;
+}
+
+/**
+ * Roll (radians) during ANIMATING: 0 while resetting yaw, then Z wobble in strain.
+ */
+export function animatingRollRadians(t: number): number {
+  const capped = Math.min(Math.max(0, t), TIMELINE.TOTAL);
+  if (capped <= RESET_DURATION) {
+    return 0;
+  }
+  const strainT = capped - RESET_DURATION;
+  const strainTotal = TIMELINE.TOTAL - RESET_DURATION;
+  const env = smoothstep(
+    window01(strainT, 0, Math.min(0.45, strainTotal * 0.2)),
+  );
+  return (
+    env *
+    (ROLL.SWAY1 * Math.sin(ROLL.OMEGA1 * strainT + ROLL.PHASE) +
+      ROLL.SWAY2 * Math.sin(ROLL.OMEGA2 * strainT + 0.7))
+  );
 }
 
 export function shakeAmountAnimating(t: number): number {
@@ -143,3 +257,7 @@ export function isCelebrationSettling(
 ): boolean {
   return boost > SETTLE_EPS.BOOST || spinSpeed > SETTLE_EPS.SPEED;
 }
+
+export const COIN_SCALE = 0.5;
+export const COIN_RADIUS = 0.32 * COIN_SCALE;
+export const COIN_THICKNESS = 0.092 * COIN_SCALE;

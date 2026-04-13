@@ -6,7 +6,7 @@ import { ResultsOverlay } from "./components/ResultsOverlay";
 import { useCanvasHiddenAfterResults } from "./hooks/useCanvasHiddenAfterResults";
 import { AnimationState, type AnimationState as AnimState } from "./type";
 import { AnimatePresence, motion } from "motion/react";
-import { Model } from "./components/Model";
+import { Model } from "./components/NewModel";
 
 const CANVAS_HIDE_DELAY_MS = 320;
 
