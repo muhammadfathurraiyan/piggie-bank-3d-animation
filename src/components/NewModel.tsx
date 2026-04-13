@@ -1,24 +1,34 @@
-import { Center, Environment, OrbitControls, useGLTF } from "@react-three/drei";
+import {
+  Center,
+  Decal,
+  Environment,
+  OrbitControls,
+  useGLTF,
+  useTexture,
+} from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import {
+  BallCollider,
+  MeshCollider,
   Physics,
   RigidBody,
-  MeshCollider,
   type RapierRigidBody,
 } from "@react-three/rapier";
-import { useEffect, useRef } from "react";
+import { Bloom, EffectComposer, Vignette } from "@react-three/postprocessing";
+import { useEffect, useMemo, useRef, type RefObject } from "react";
 import {
+  DoubleSide,
   Euler,
   Group,
   MathUtils,
   Mesh,
-  Object3D,
   PerspectiveCamera,
   Quaternion,
+  SRGBColorSpace,
+  type Texture,
 } from "three";
 
-import pigUrl from "../assets/Pigs.glb?url";
-import { AnimationState, type AnimationState as AnimState } from "../type";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import {
   advanceShakePhase,
   animatingPitchRadians,
@@ -31,47 +41,227 @@ import {
   ROT_MAX,
   SCALE_MAX,
   SETTLE_DAMP,
+  SHAKE_ESCAPE_MUL,
   shakeAmountAnimating,
   shakeAmountResults,
   shakeOffsetInto,
   TIMELINE,
 } from "../pigAnimation";
-import { Bloom, EffectComposer, Vignette } from "@react-three/postprocessing";
+import { AnimationState, type AnimationState as AnimState } from "../type";
+
+import imgIphone from "../assets/images/img-iphone.png";
+import imgMacbook from "../assets/images/img-macbook.png";
+import imgUsdc from "../assets/images/img-usdc.png";
+import imgTexture from "../assets/images/img-ball-texture.png";
+import pigUrl from "../assets/Pigs.glb?url";
 
 useGLTF.preload(pigUrl);
 
+// --- Scene tuning -----------------------------------------------------------------------------
+
+const EXTRA_LARGE_MEDIA_QUERY = "(min-width: 1920px)";
+const ORBIT_MIN_DISTANCE = { normal: 5, xl: 12 } as const;
+
+const PHYSICS = {
+  gravity: [0, -9.81, 0] as [number, number, number],
+  numSolverIterations: 20,
+  maxCcdSubsteps: 8,
+  predictionDistance: 0.02,
+} as const;
+
+const POST = {
+  bloom: {
+    intensity: 1.75,
+    luminanceThreshold: 0.62,
+    luminanceSmoothing: 0.35,
+    radius: 0.55,
+  },
+  vignette: { offset: 0.1, darkness: 0.62 },
+} as const;
+
+const ENVIRONMENT = {
+  preset: "warehouse" as const,
+  environmentIntensity: 0.45,
+  blur: 4,
+} as const;
+
+/** Caps spin rate after celebration so physics stay stable. */
+const MAX_IDLE_YAW_RATE = 12;
+
+const BALL_TEXTURE_URLS = [imgIphone, imgMacbook, imgUsdc, imgTexture] as const;
+
+type BallTextureIndex = 0 | 1 | 2 | 3;
+type BallImageIndex = 0 | 1 | 2;
+
+type DemoBall = {
+  tex: BallTextureIndex;
+  img: BallImageIndex;
+};
+
+/** How many prize orbs to spawn (demo catalog). */
+const DEMO_BALL_COUNT = 24;
+
+function buildDemoBalls(count: number): DemoBall[] {
+  return Array.from({ length: count }, (_, i) => ({
+    tex: 3,
+    img: (i % 3) as BallImageIndex,
+  }));
+}
+
+const DEMO_BALLS = buildDemoBalls(DEMO_BALL_COUNT);
+
+function randomBallSpawn(): [number, number, number] {
+  return [(Math.random() - 0.5) * 0.3, 1, (Math.random() - 0.5) * 0.3];
+}
+
+function cloneTexturesSRGB(textures: Texture | Texture[]): Texture[] {
+  const list = Array.isArray(textures) ? textures : [textures];
+  return list.map((t) => {
+    const tex = t.clone();
+    tex.colorSpace = SRGBColorSpace;
+    return tex;
+  });
+}
+
+// --- Pig (collider) ---------------------------------------------------------------------------
+
 type GLTFResult = {
   nodes: {
-    Pig_Visual: Object3D;
     Pig_Collider: Mesh;
   };
 };
 
 type PigProps = {
-  pigRef: React.RefObject<RapierRigidBody | null>;
-  pigGroup: React.RefObject<Group | null>;
+  pigRef: RefObject<RapierRigidBody | null>;
+  pigGroup: RefObject<Group | null>;
 };
 
-const randomPosition = (i: number): [number, number, number] => {
-  return [
-    (Math.random() - 0.5) * 0.3,
-    1 + i * 0.15,
-    (Math.random() - 0.5) * 0.3,
-  ];
+function Pig({ pigRef, pigGroup }: PigProps) {
+  const { nodes } = useGLTF(pigUrl) as unknown as GLTFResult;
+
+  return (
+    <RigidBody
+      ref={pigRef}
+      type="kinematicPosition"
+      colliders={false}
+      includeInvisible
+    >
+      <group ref={pigGroup}>
+        <MeshCollider type="trimesh">
+          <primitive object={nodes.Pig_Collider} />
+        </MeshCollider>
+
+        {/* <primitive object={nodes.Pig_Visual} /> */}
+      </group>
+    </RigidBody>
+  );
+}
+
+// --- Prize orbs -------------------------------------------------------------------------------
+
+/** Outer glass shell radius; physics uses matching `BallCollider`. */
+const BALL_MESH_SCALE = 0.92;
+const BALL_RADIUS = 0.32 * BALL_MESH_SCALE;
+/** Inner content sphere — slightly smaller so the shell reads as glass around it */
+const BALL_INNER_RADIUS = BALL_RADIUS * 0.76;
+/** Low density = light rigid bodies; stability from restitution 0 + damping + modest SHAKE_ESCAPE_MUL. */
+const BALL_DENSITY = 2;
+
+const innerDecalScale = (r: number): [number, number, number] => [
+  r * 2.12,
+  r * 2.12,
+  r * 2.12,
+];
+
+type BallProps = {
+  position: [number, number, number];
+  texture: Texture;
+  imageTexture: Texture;
 };
 
-/** Scales shake applied to kinematic translation — keep low so coins stay inside the pig. */
-const SHAKE_ESCAPE_MUL = 0.44;
+function Ball({ position, texture, imageTexture }: BallProps) {
+  const iconRef = useRef<Mesh>(null);
 
-export type ModelProps = {
-  animationState: AnimState;
-  setAnimationState: (state: AnimState) => void;
-};
+  useFrame((state) => {
+    if (!iconRef.current) return;
+    iconRef.current.position.y =
+      Math.sin(state.clock.elapsedTime * 1.5) * 0.03;
+    iconRef.current.rotation.y += 0.003;
+  });
 
-export function Model({ animationState, setAnimationState }: ModelProps) {
-  const pigRef = useRef<RapierRigidBody | null>(null);
-  const pigGroup = useRef<Group | null>(null);
+  const planeSize = BALL_INNER_RADIUS * 1.2;
 
+  return (
+    <RigidBody
+      type="dynamic"
+      ccd
+      colliders={false}
+      position={position}
+      density={BALL_DENSITY}
+      linearDamping={1.15}
+      angularDamping={0.88}
+    >
+      <BallCollider args={[BALL_RADIUS]} friction={1} restitution={0} />
+      <group>
+        <mesh ref={iconRef} position={[0, 0, 0]} renderOrder={5}>
+          <planeGeometry args={[planeSize, planeSize]} />
+          <meshBasicMaterial
+            map={imageTexture}
+            transparent
+            depthWrite={false}
+            depthTest={false}
+            toneMapped={false}
+            side={DoubleSide}
+          />
+        </mesh>
+
+        <mesh>
+          <sphereGeometry args={[BALL_INNER_RADIUS, 48, 48]} />
+          <meshStandardMaterial
+            color="#1c1c22"
+            roughness={0.92}
+            metalness={0}
+          />
+          <Decal
+            position={[0, 0, BALL_INNER_RADIUS]}
+            scale={innerDecalScale(BALL_INNER_RADIUS)}
+            map={texture}
+            polygonOffsetFactor={-8}
+          />
+          <Decal
+            position={[0, 0, -BALL_INNER_RADIUS]}
+            scale={innerDecalScale(BALL_INNER_RADIUS)}
+            map={texture}
+            polygonOffsetFactor={-8}
+            rotation={[0, Math.PI, 0]}
+          />
+        </mesh>
+
+        <mesh castShadow receiveShadow>
+          <sphereGeometry args={[BALL_RADIUS, 64, 64]} />
+          <meshPhysicalMaterial
+            color="#FFD0D0"
+            metalness={1}
+            roughness={0.123666}
+            transmission={0.94}
+            thickness={BALL_RADIUS * 0.22}
+            ior={1.5}
+            blendAlpha={0.52}
+            transparent
+          />
+        </mesh>
+      </group>
+    </RigidBody>
+  );
+}
+
+// --- Pig + camera animation (kinematic pig, FOV punch, shake) ---------------------------------
+
+function usePigSceneAnimation(
+  animationState: AnimState,
+  setAnimationState: (state: AnimState) => void,
+  pigRef: RefObject<RapierRigidBody | null>,
+) {
   const tmpShake = useRef({ x: 0, y: 0, z: 0 });
   const idleFovRef = useRef<number | null>(null);
   const zoomBoostRef = useRef(1);
@@ -142,10 +332,11 @@ export function Model({ animationState, setAnimationState }: ModelProps) {
       }
     }
 
-    if (
+    const isShakePhase =
       animationState === AnimationState.ANIMATING ||
-      animationState === AnimationState.RESULTS
-    ) {
+      animationState === AnimationState.RESULTS;
+
+    if (isShakePhase) {
       shakePhase.current = advanceShakePhase(
         shakePhase.current,
         delta,
@@ -155,7 +346,10 @@ export function Model({ animationState, setAnimationState }: ModelProps) {
 
     let shakeAmount = 0;
     if (animationState === AnimationState.ANIMATING) {
-      shakeAmount = shakeAmountAnimating(animT.current);
+      shakeAmount = shakeAmountAnimating(
+        animT.current,
+        animStartYawRef.current,
+      );
     } else if (animationState === AnimationState.RESULTS) {
       shakeAmount = shakeAmountResults(SCALE_MAX, completeSpeed.current);
     }
@@ -192,153 +386,128 @@ export function Model({ animationState, setAnimationState }: ModelProps) {
 
     const s = tmpShake.current;
     shakeOffsetInto(s, shakePhase.current, shakeAmount * SHAKE_ESCAPE_MUL);
+    s.y *= 0.88;
 
-    if (pigRef.current) {
-      if (!pigBaseTranslation.current) {
-        const tr = pigRef.current.translation();
-        pigBaseTranslation.current = { x: tr.x, y: tr.y, z: tr.z };
-      }
-      const b = pigBaseTranslation.current;
+    const body = pigRef.current;
+    if (!body) return;
 
-      if (animationState === AnimationState.ANIMATING) {
-        const t = Math.min(animT.current, TIMELINE.TOTAL);
-        rotationY.current = animatingYawRadians(t, animStartYawRef.current);
-        rotationX.current = animatingPitchRadians(t);
-        rotationZ.current = animatingRollRadians(t);
-      } else {
-        const safeSpeed = Math.min(rotSpeed, 6);
-        rotationY.current += delta * safeSpeed;
-        rotationX.current = MathUtils.damp(
-          rotationX.current,
-          0,
-          SETTLE_DAMP,
-          delta,
-        );
-        rotationZ.current = MathUtils.damp(
-          rotationZ.current,
-          0,
-          SETTLE_DAMP,
-          delta,
-        );
-      }
-
-      pigRef.current.setNextKinematicTranslation({
-        x: b.x + s.x,
-        y: b.y + s.y,
-        z: b.z + s.z,
-      });
-
-      pigRotEuler.current.set(
-        rotationX.current,
-        rotationY.current,
-        rotationZ.current,
-        "YXZ",
-      );
-      pigRotQuat.current.setFromEuler(pigRotEuler.current);
-      const q = pigRotQuat.current;
-      pigRef.current.setNextKinematicRotation({
-        x: q.x,
-        y: q.y,
-        z: q.z,
-        w: q.w,
-      });
+    if (!pigBaseTranslation.current) {
+      const tr = body.translation();
+      pigBaseTranslation.current = { x: tr.x, y: tr.y, z: tr.z };
     }
+    const b = pigBaseTranslation.current;
+
+    if (animationState === AnimationState.ANIMATING) {
+      const t = Math.min(animT.current, TIMELINE.TOTAL);
+      rotationY.current = animatingYawRadians(t, animStartYawRef.current);
+      rotationX.current = animatingPitchRadians(t, animStartYawRef.current);
+      rotationZ.current = animatingRollRadians(t, animStartYawRef.current);
+    } else {
+      const safeSpeed = Math.min(rotSpeed, MAX_IDLE_YAW_RATE);
+      rotationY.current += delta * safeSpeed;
+      rotationX.current = MathUtils.damp(
+        rotationX.current,
+        0,
+        SETTLE_DAMP,
+        delta,
+      );
+      rotationZ.current = MathUtils.damp(
+        rotationZ.current,
+        0,
+        SETTLE_DAMP,
+        delta,
+      );
+    }
+
+    body.setNextKinematicTranslation({
+      x: b.x + s.x,
+      y: b.y + s.y,
+      z: b.z + s.z,
+    });
+
+    pigRotEuler.current.set(
+      rotationX.current,
+      rotationY.current,
+      rotationZ.current,
+      "YXZ",
+    );
+    pigRotQuat.current.setFromEuler(pigRotEuler.current);
+    const q = pigRotQuat.current;
+    body.setNextKinematicRotation({
+      x: q.x,
+      y: q.y,
+      z: q.z,
+      w: q.w,
+    });
   });
+}
+
+// --- Public scene -----------------------------------------------------------------------------
+
+export type ModelProps = {
+  animationState: AnimState;
+  setAnimationState: (state: AnimState) => void;
+};
+
+export function Model({ animationState, setAnimationState }: ModelProps) {
+  const pigRef = useRef<RapierRigidBody | null>(null);
+  const pigGroup = useRef<Group | null>(null);
+  const isExtraLargeScreen = useMediaQuery(EXTRA_LARGE_MEDIA_QUERY);
+
+  const ballTexturesLoaded = useTexture([...BALL_TEXTURE_URLS]);
+  const ballTextures = useMemo(
+    () => cloneTexturesSRGB(ballTexturesLoaded),
+    [ballTexturesLoaded],
+  );
+
+  const ballPositions = useMemo(
+    () =>
+      Array.from({ length: DEMO_BALLS.length }, () =>
+        randomBallSpawn(),
+      ) as [number, number, number][],
+    [],
+  );
+
+  usePigSceneAnimation(animationState, setAnimationState, pigRef);
+
+  const orbitMinDistance = isExtraLargeScreen
+    ? ORBIT_MIN_DISTANCE.xl
+    : ORBIT_MIN_DISTANCE.normal;
 
   return (
     <>
-      <Environment preset="warehouse" environmentIntensity={0.45} blur={4} />
-      <OrbitControls makeDefault enableZoom={false} minDistance={12} />
+      <Environment
+        preset={ENVIRONMENT.preset}
+        environmentIntensity={ENVIRONMENT.environmentIntensity}
+        blur={ENVIRONMENT.blur}
+      />
+      <OrbitControls makeDefault enableZoom={false} minDistance={orbitMinDistance} />
 
-      <Physics
-        gravity={[0, -9.81, 0]}
-        numSolverIterations={20}
-        maxCcdSubsteps={8}
-        predictionDistance={0.02}
-      >
+      <Physics {...PHYSICS}>
         <Center>
           <Pig pigRef={pigRef} pigGroup={pigGroup} />
 
-          {Array.from({ length: 1 }).map((_, i) => {
-            const position: [number, number, number] = randomPosition(i);
-
-            return <Coin key={i} position={position} />;
-          })}
+          {DEMO_BALLS.map((ball, i) => (
+            <Ball
+              key={`demo-ball-${i}`}
+              position={ballPositions[i]!}
+              texture={ballTextures[ball.tex]!}
+              imageTexture={ballTextures[ball.img]!}
+            />
+          ))}
         </Center>
       </Physics>
 
       <EffectComposer>
         <Bloom
-          intensity={1.75}
-          luminanceThreshold={0.62}
-          luminanceSmoothing={0.35}
+          intensity={POST.bloom.intensity}
+          luminanceThreshold={POST.bloom.luminanceThreshold}
+          luminanceSmoothing={POST.bloom.luminanceSmoothing}
           mipmapBlur
-          radius={0.55}
+          radius={POST.bloom.radius}
         />
-        <Vignette eskil={false} offset={0.1} darkness={0.62} />
+        <Vignette eskil={false} offset={POST.vignette.offset} darkness={POST.vignette.darkness} />
       </EffectComposer>
     </>
-  );
-}
-
-function Pig({ pigRef, pigGroup }: PigProps) {
-  const { nodes } = useGLTF(pigUrl) as unknown as GLTFResult;
-
-  return (
-    <RigidBody
-      ref={pigRef}
-      type="kinematicPosition"
-      colliders={false}
-      includeInvisible
-    >
-      <group ref={pigGroup}>
-        <MeshCollider type="trimesh">
-          <primitive object={nodes.Pig_Collider} />
-        </MeshCollider>
-
-        {/* <primitive object={nodes.Pig_Visual} /> */}
-      </group>
-    </RigidBody>
-  );
-}
-
-type CoinProps = {
-  position: [number, number, number];
-};
-
-/** Uniform scale vs previous coin (hull collider matches mesh). */
-const COIN_MESH_SCALE = 0.68;
-const COIN_R = 0.32 * COIN_MESH_SCALE;
-const COIN_H = 0.092 * COIN_MESH_SCALE;
-const COIN_INLAY_R = 0.26 * COIN_MESH_SCALE;
-const COIN_INLAY_H = 0.005 * COIN_MESH_SCALE;
-const COIN_INLAY_Y = 0.048 * COIN_MESH_SCALE;
-
-function Coin({ position }: CoinProps) {
-  return (
-    <RigidBody
-      type="dynamic"
-      ccd
-      colliders="hull"
-      position={position}
-      linearDamping={0.4}
-      angularDamping={0.6}
-      friction={0.8}
-      restitution={0.05}
-    >
-      <mesh castShadow receiveShadow>
-        <cylinderGeometry args={[COIN_R, COIN_R, COIN_H, 14]} />
-        <meshStandardMaterial
-          color="#f5c542"
-          metalness={0.88}
-          roughness={0.18}
-          envMapIntensity={1.2}
-        />
-      </mesh>
-      <mesh position={[0, COIN_INLAY_Y, 0]}>
-        <cylinderGeometry args={[COIN_INLAY_R, COIN_INLAY_R, COIN_INLAY_H, 8]} />
-        <meshStandardMaterial color="#e6b800" metalness={0.9} roughness={0.1} />
-      </mesh>
-    </RigidBody>
   );
 }

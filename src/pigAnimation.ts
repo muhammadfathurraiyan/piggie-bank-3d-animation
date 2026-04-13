@@ -7,39 +7,42 @@ export const TIMELINE = {
   SCALE: { A: 1, B: 5 },
 } as const;
 
-/** Phase A: shortest-path yaw back to front-facing before strain (seconds). */
-export const RESET_DURATION = 0.65;
+/**
+ * Legacy default when start yaw is unknown (e.g. Model.tsx). Real reset uses
+ * {@link resetYawReturnDuration} from the idle angle at animation start.
+ */
+export const RESET_DURATION = 1.35;
 
 const STRAIN = {
-  AMP1: 0.055,
-  AMP2: 0.022,
-  OMEGA1: 12,
-  OMEGA2: 19,
+  AMP1: 0.11,
+  AMP2: 0.048,
+  OMEGA1: 14,
+  OMEGA2: 22,
 } as const;
 
-/** Pitch (rotation X, radians) during strain — small lean + wobble (large X tosses coins). */
+/** Pitch (rotation X) during strain. */
 const PITCH = {
-  LEAN: -0.08,
-  WOBBLE1: 0.045,
-  WOBBLE2: 0.018,
-  OMEGA1: 13,
-  OMEGA2: 20,
+  LEAN: -0.12,
+  WOBBLE1: 0.065,
+  WOBBLE2: 0.028,
+  OMEGA1: 15,
+  OMEGA2: 23,
 } as const;
 
-/** Roll (rotation Z, radians) during strain — subtle rock only. */
+/** Roll (rotation Z) during strain. */
 const ROLL = {
-  SWAY1: 0.042,
-  SWAY2: 0.028,
-  OMEGA1: 16,
-  OMEGA2: 25,
+  SWAY1: 0.058,
+  SWAY2: 0.04,
+  OMEGA1: 17,
+  OMEGA2: 26,
   PHASE: 2.1,
 } as const;
 
 export const IDLE_ROT_SPEED = 1;
-/** Y spin speed during RESULTS — keep modest so contents aren’t flung by the collider. */
-export const ROT_MAX = 1.15;
+/** Y spin during RESULTS — stronger celebration (watch coin containment). */
+export const ROT_MAX = 1.75;
 /** Peak zoom multiplier during the spin (narrower FOV ≈ × larger on screen; same curve as old mesh scale). */
-export const SCALE_MAX = 1.72;
+export const SCALE_MAX = 1.95;
 
 export const SCALE_IN_LAMBDA = 5;
 export const SCALE_EPS = 0;
@@ -50,19 +53,19 @@ export const SETTLE_DAMP = 2.2;
 /** One-shot extra zoom multiplier at RESULTS entry (FOV punch, ~0.7s). */
 export const BANG = {
   DURATION: 0.7,
-  PEAK_EXTRA: 0.32,
+  PEAK_EXTRA: 0.44,
   ATTACK_FR: 0.12,
 } as const;
 
 const SHAKE = {
   IDLE: 0.016,
-  ANIM_MIN: 0.032,
-  ANIM_MAX: 0.075,
-  RESULTS_MUL: 0.52,
+  ANIM_MIN: 0.055,
+  ANIM_MAX: 0.14,
+  RESULTS_MUL: 0.72,
 } as const;
 
-/** Phase advance per second — lower = calmer jitter, less violent collider motion. */
-const SHAKE_PHASE = { ANIMATING: 12, RESULTS: 9 } as const;
+/** Phase advance per second — higher = snappier shake oscillation. */
+const SHAKE_PHASE = { ANIMATING: 14, RESULTS: 10 } as const;
 
 const SETTLE_EPS = {
   BOOST: 1.002,
@@ -134,21 +137,6 @@ export function animatingZoomBoost(t: number): number {
   return SCALE_MAX;
 }
 
-function shakeStressAt(t: number): number {
-  const { SCALE } = TIMELINE;
-  const capped = Math.min(t, TIMELINE.TOTAL);
-  if (capped <= RESET_DURATION) {
-    return smoothstep(capped / RESET_DURATION) * 0.16;
-  }
-  const strainT = capped - RESET_DURATION;
-  const strainTotal = TIMELINE.TOTAL - RESET_DURATION;
-  const rampStrain = smoothstep(
-    window01(strainT, 0, Math.min(0.5, strainTotal * 0.22)),
-  );
-  const rampScale = smoothstep(window01(capped, SCALE.A, SCALE.B));
-  return Math.max(rampStrain, rampScale * 0.62);
-}
-
 /** Equivalent angle in (-π, π] for yaw-only rotation. */
 export function wrapPi(theta: number): number {
   const twoPi = Math.PI * 2;
@@ -164,23 +152,68 @@ export function shortestYawDeltaToZero(startYawRad: number): number {
 }
 
 /**
- * Yaw (radians) during ANIMATING: ease to front-facing, then bounded struggle oscillation.
- * Zoom timeline unchanged — this only drives mesh/body yaw.
+ * Return-to-front yaw: duration = clamp(|Δyaw| / RESET_YAW_SPEED, MIN, MAX).
+ * Large |Δyaw| hits MAX (2s) and rotates faster than RESET_YAW_SPEED alone would allow.
+ */
+const RESET_YAW_SPEED = 0.15;
+const RESET_RETURN_DUR_MIN = 0.5;
+const RESET_RETURN_DUR_MAX = 1;
+
+/**
+ * Phase A length: scales with how far we must rotate from idle yaw to face forward.
+ * Uses linear yaw over this interval (no smoothstep peak) to avoid a hard sweep.
+ */
+export function resetYawReturnDuration(startYawRad: number): number {
+  const mag = Math.abs(shortestYawDeltaToZero(startYawRad));
+  if (mag < 1e-4) {
+    return Math.min(RESET_RETURN_DUR_MIN * 0.4, 0.55);
+  }
+  return MathUtils.clamp(
+    mag / RESET_YAW_SPEED,
+    RESET_RETURN_DUR_MIN,
+    RESET_RETURN_DUR_MAX,
+  );
+}
+
+function shakeStressAt(t: number, startYawRad: number | undefined): number {
+  const { SCALE } = TIMELINE;
+  const capped = Math.min(t, TIMELINE.TOTAL);
+  const resetDur =
+    startYawRad !== undefined
+      ? resetYawReturnDuration(startYawRad)
+      : RESET_DURATION;
+  if (capped <= resetDur) {
+    return 0;
+  }
+  const strainT = capped - resetDur;
+  const strainTotal = TIMELINE.TOTAL - resetDur;
+  const rampStrain = smoothstep(
+    window01(strainT, 0, Math.min(0.38, strainTotal * 0.12)),
+  );
+  const rampScale = smoothstep(window01(capped, SCALE.A, SCALE.B));
+  return Math.max(rampStrain, rampScale * 0.9);
+}
+
+function strainEnvWindow(strainT: number, strainTotal: number): number {
+  return smoothstep(window01(strainT, 0, Math.min(0.3, strainTotal * 0.1)));
+}
+
+/**
+ * Yaw (radians) during ANIMATING: linear return to front-facing, then bounded struggle oscillation.
  */
 export function animatingYawRadians(t: number, startYawRad: number): number {
   const capped = Math.min(Math.max(0, t), TIMELINE.TOTAL);
   const aligned = startYawRad + shortestYawDeltaToZero(startYawRad);
+  const resetDur = resetYawReturnDuration(startYawRad);
 
-  if (capped <= RESET_DURATION) {
-    const u = smoothstep(capped / RESET_DURATION);
+  if (capped <= resetDur) {
+    const u = capped / resetDur;
     return MathUtils.lerp(startYawRad, aligned, u);
   }
 
-  const strainT = capped - RESET_DURATION;
-  const strainTotal = TIMELINE.TOTAL - RESET_DURATION;
-  const env = smoothstep(
-    window01(strainT, 0, Math.min(0.45, strainTotal * 0.2)),
-  );
+  const strainT = capped - resetDur;
+  const strainTotal = TIMELINE.TOTAL - resetDur;
+  const env = strainEnvWindow(strainT, strainTotal);
   const osc =
     STRAIN.AMP1 * Math.sin(STRAIN.OMEGA1 * strainT) * env +
     STRAIN.AMP2 * Math.sin(STRAIN.OMEGA2 * strainT + 1.1) * env;
@@ -188,18 +221,17 @@ export function animatingYawRadians(t: number, startYawRad: number): number {
 }
 
 /**
- * Pitch (radians) during ANIMATING: 0 while resetting yaw, then lean + X wobble in strain.
+ * Pitch (radians) during ANIMATING: 0 while yaw resets, then lean + X wobble in strain.
  */
-export function animatingPitchRadians(t: number): number {
+export function animatingPitchRadians(t: number, startYawRad: number): number {
   const capped = Math.min(Math.max(0, t), TIMELINE.TOTAL);
-  if (capped <= RESET_DURATION) {
+  const resetDur = resetYawReturnDuration(startYawRad);
+  if (capped <= resetDur) {
     return 0;
   }
-  const strainT = capped - RESET_DURATION;
-  const strainTotal = TIMELINE.TOTAL - RESET_DURATION;
-  const env = smoothstep(
-    window01(strainT, 0, Math.min(0.45, strainTotal * 0.2)),
-  );
+  const strainT = capped - resetDur;
+  const strainTotal = TIMELINE.TOTAL - resetDur;
+  const env = strainEnvWindow(strainT, strainTotal);
   const lean = PITCH.LEAN * env;
   const wobble =
     PITCH.WOBBLE1 * env * Math.sin(PITCH.OMEGA1 * strainT + 0.4) +
@@ -208,18 +240,17 @@ export function animatingPitchRadians(t: number): number {
 }
 
 /**
- * Roll (radians) during ANIMATING: 0 while resetting yaw, then Z wobble in strain.
+ * Roll (radians) during ANIMATING: 0 while yaw resets, then Z wobble in strain.
  */
-export function animatingRollRadians(t: number): number {
+export function animatingRollRadians(t: number, startYawRad: number): number {
   const capped = Math.min(Math.max(0, t), TIMELINE.TOTAL);
-  if (capped <= RESET_DURATION) {
+  const resetDur = resetYawReturnDuration(startYawRad);
+  if (capped <= resetDur) {
     return 0;
   }
-  const strainT = capped - RESET_DURATION;
-  const strainTotal = TIMELINE.TOTAL - RESET_DURATION;
-  const env = smoothstep(
-    window01(strainT, 0, Math.min(0.45, strainTotal * 0.2)),
-  );
+  const strainT = capped - resetDur;
+  const strainTotal = TIMELINE.TOTAL - resetDur;
+  const env = strainEnvWindow(strainT, strainTotal);
   return (
     env *
     (ROLL.SWAY1 * Math.sin(ROLL.OMEGA1 * strainT + ROLL.PHASE) +
@@ -227,8 +258,8 @@ export function animatingRollRadians(t: number): number {
   );
 }
 
-export function shakeAmountAnimating(t: number): number {
-  const stress = shakeStressAt(t);
+export function shakeAmountAnimating(t: number, startYawRad?: number): number {
+  const stress = shakeStressAt(t, startYawRad);
   return MathUtils.lerp(SHAKE.ANIM_MIN, SHAKE.ANIM_MAX, stress);
 }
 
@@ -242,6 +273,8 @@ export function shakeAmountResults(boost: number, spinSpeed: number): number {
     ) * MathUtils.clamp(spinSpeed / ROT_MAX, 0.35, 1)
   );
 }
+
+
 
 export function advanceShakePhase(
   phase: number,
@@ -258,6 +291,5 @@ export function isCelebrationSettling(
   return boost > SETTLE_EPS.BOOST || spinSpeed > SETTLE_EPS.SPEED;
 }
 
-export const COIN_SCALE = 0.5;
-export const COIN_RADIUS = 0.32 * COIN_SCALE;
-export const COIN_THICKNESS = 0.092 * COIN_SCALE;
+/** Multiplier on shake translation applied to kinematic pig (lower = coins stay inside). */
+export const SHAKE_ESCAPE_MUL = 0.24;

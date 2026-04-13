@@ -40,6 +40,7 @@ export default function App() {
         </motion.div>
 
         <div className="h-[300px]" />
+
         <Canvas
           className={
             canvasHidden
