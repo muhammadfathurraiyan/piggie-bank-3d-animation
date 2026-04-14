@@ -6,7 +6,7 @@ import { ResultsOverlay } from "./components/ResultsOverlay";
 import { useCanvasHiddenAfterResults } from "./hooks/useCanvasHiddenAfterResults";
 import { AnimationState, type AnimationState as AnimState } from "./type";
 import { AnimatePresence, motion } from "motion/react";
-import { Model } from "./components/NewModel";
+import { Model } from "./components/Model";
 
 const CANVAS_HIDE_DELAY_MS = 320;
 
@@ -74,7 +74,7 @@ export default function App() {
           className="relative z-10 cursor-pointer inline-flex items-center justify-center px-6 py-3 overflow-hidden font-medium uppercase text-white rounded-md shadow-2xl group"
           onClick={() => {
             if (animationState === AnimationState.IDLE) {
-              setAnimationState(AnimationState.ANIMATING);
+              setAnimationState(AnimationState.PIG_ANIMATION);
             }
           }}
         >
