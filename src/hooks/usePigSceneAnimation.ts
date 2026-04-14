@@ -125,8 +125,8 @@ export function usePigSceneAnimation(
         shakePhase.current,
         dt,
         animationState === AnimationState.PIG_ANIMATION
-          ? "ANIMATING"
-          : "RESULTS",
+          ? "PIG_ANIMATION"
+          : "BALL_ANIMATION",
       );
     }
 

@@ -1,4 +1,4 @@
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 
 import { Loader } from "./components/Loader";
@@ -7,6 +7,8 @@ import { useCanvasHiddenAfterResults } from "./hooks/useCanvasHiddenAfterResults
 import { AnimationState, type AnimationState as AnimState } from "./type";
 import { AnimatePresence, motion } from "motion/react";
 import { Model } from "./components/Model";
+import { CoinEnter } from "./components/CoinEnter";
+import { BallCrack } from "./components/BallCrack";
 
 const CANVAS_HIDE_DELAY_MS = 320;
 
@@ -21,6 +23,14 @@ export default function App() {
     animationState,
     CANVAS_HIDE_DELAY_MS,
   );
+
+  useEffect(() => {
+    if (animationState === AnimationState.USDC_ENTER_ANIMATION) {
+      setTimeout(() => {
+        setAnimationState(AnimationState.PIG_ANIMATION);
+      }, 2000);
+    }
+  }, [animationState, setAnimationState]);
 
   return (
     <>
@@ -74,7 +84,7 @@ export default function App() {
           className="relative z-10 cursor-pointer inline-flex items-center justify-center px-6 py-3 overflow-hidden font-medium uppercase text-white rounded-md shadow-2xl group"
           onClick={() => {
             if (animationState === AnimationState.IDLE) {
-              setAnimationState(AnimationState.PIG_ANIMATION);
+              setAnimationState(AnimationState.USDC_ENTER_ANIMATION);
             }
           }}
         >
@@ -90,6 +100,28 @@ export default function App() {
       </div>
 
       <AnimatePresence>
+        {animationState === AnimationState.USDC_ENTER_ANIMATION && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2, delay: 0.2, ease: "easeOut" }}
+            className="absolute inset-0 flex items-center justify-center z-20"
+          >
+            <CoinEnter />
+          </motion.div>
+        )}
+        {(animationState === AnimationState.BALL_ANIMATION ||
+          animationState === AnimationState.BALL_CRACK_ANIMATION) && (
+          <BallCrack
+            key="ball-crack"
+            animationState={animationState}
+            setAnimationState={setAnimationState}
+            onContinue={() =>
+              setAnimationState(AnimationState.BALL_CRACK_ANIMATION)
+            }
+          />
+        )}
         {animationState === AnimationState.RESULTS && (
           <ResultsOverlay
             key="results"

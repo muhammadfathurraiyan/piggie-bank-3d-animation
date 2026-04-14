@@ -17,7 +17,7 @@ const SHAKE = {
   RESULTS_MUL: 0.72,
 } as const;
 
-const SHAKE_PHASE = { ANIMATING: 14, RESULTS: 10 } as const;
+const SHAKE_PHASE = { PIG_ANIMATION: 14, BALL_ANIMATION: 0 } as const;
 
 const SETTLE_EPS = {
   BOOST: 1.002,
@@ -85,7 +85,7 @@ export function shakeAmountResults(boost: number, spinSpeed: number): number {
 export function advanceShakePhase(
   phase: number,
   delta: number,
-  mode: "ANIMATING" | "RESULTS",
+  mode: "PIG_ANIMATION" | "BALL_ANIMATION",
 ): number {
   return phase + delta * SHAKE_PHASE[mode];
 }
